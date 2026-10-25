@@ -1,0 +1,70 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // UID des Admin-Kontos, siehe README. Muss mit js/firebase-config.js übereinstimmen.
+    function isAdmin() {
+      return request.auth != null && request.auth.uid == 'h2Gz4nUykgTb9doZMBOSeEG8KI12';
+    }
+
+    function accountPath() {
+      return /databases/$(database)/documents/accounts/$(request.auth.uid);
+    }
+
+    // Nur Konten, die der Admin einem Teilnehmer zugeordnet hat, zählen als Mitglied.
+    // Selbst angelegte Firebase-Konten haben damit keinen Zugriff.
+    function isMember() {
+      return request.auth != null && exists(accountPath());
+    }
+
+    function myPid() {
+      return get(accountPath()).data.participantId;
+    }
+
+    function isMyReceiver(pid) {
+      let assignment = /databases/$(database)/documents/assignments/$(myPid());
+      return exists(assignment) && get(assignment).data.receiverId == pid;
+    }
+
+    match /settings/{docId} {
+      allow read: if isMember() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /accounts/{uid} {
+      allow read: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    // Name und Ausschlüsse; die Namen braucht die Lostrommel.
+    match /participants/{pid} {
+      allow read: if isMember() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Kennwörter, nur für den Admin.
+    match /secrets/{pid} {
+      allow read, write: if isAdmin();
+    }
+
+    match /assignments/{giverPid} {
+      allow read: if isAdmin() || (isMember() && myPid() == giverPid);
+      allow create, delete: if isAdmin();
+      // Der Schenker darf nur vermerken, dass er gelost hat.
+      allow update: if isAdmin() || (isMember() && myPid() == giverPid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revealed', 'revealedAt'])
+        && request.resource.data.revealed == true);
+    }
+
+    // Lesen dürfen nur der Besitzer selbst und die Person, die ihn gezogen hat.
+    match /wishlists/{pid} {
+      allow read: if isMember() && (myPid() == pid || isMyReceiver(pid));
+      allow create, update: if isMember() && myPid() == pid
+        && request.resource.data.keys().hasOnly(['items', 'updatedAt'])
+        && request.resource.data.items is list
+        && request.resource.data.items.size() <= 50;
+      allow delete: if isAdmin();
+    }
+  }
+}
